@@ -1,0 +1,130 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Read the CSV file
+Stroma_final_df_100K <- read.csv("/Users/olsen/Desktop/MMProject/MM_cluster_abundance_per_slide.csv")
+
+
+# Check the first few rows to verify the structure
+head(Stroma_final_df_100K)
+
+```
+```{r}
+pairwise_results <- Stroma_final_df_100K %>%
+  group_by(cluster) %>%
+  do({
+    control_data <- .[.$Disease_Stage == "Prostate Cancer", "cell_per_100K"]
+    other_stages <- unique(.$Disease_Stage[.$Disease_Stage != "Prostate Cancer"])
+    
+    results <- lapply(other_stages, function(stage) {
+      stage_data <- .[.$Disease_Stage == stage, "cell_per_100K"]
+      
+      if (length(na.omit(control_data$cell_per_100K)) < 1 || 
+          length(na.omit(stage_data$cell_per_100K)) < 1) {
+        # Log the skipped comparison
+        message(paste0("⚠️ Skipping cluster ", unique(.$cluster), 
+                       " vs stage ", stage, 
+                       " due to insufficient data"))
+        return(data.frame(
+          cluster = unique(.$cluster),
+          stage = stage,
+          p_value = NA
+        ))
+      }
+      
+      test_result <- wilcox.test(control_data$cell_per_100K, stage_data$cell_per_100K)
+      
+      data.frame(
+        cluster = unique(.$cluster),
+        stage = stage,
+        p_value = test_result$p.value
+      )
+    })
+    
+    do.call(rbind, results)
+  })
+
+
+```
+
+
+```{r}
+pairwise_results <- Stroma_final_df_100K %>%
+  group_by(cluster) %>%
+  do({
+    control_data <- .[.$Disease_Stage == "Prostate Cancer", "cell_per_100K"]
+    other_stages <- unique(.$Disease_Stage[.$Disease_Stage != "Prostate Cancer"])
+    results <- lapply(other_stages, function(stage) {
+      stage_data <- .[.$Disease_Stage == stage, "cell_per_100K"]
+      test_result <- wilcox.test(control_data$cell_per_100K, stage_data$cell_per_100K)
+      data.frame(
+        cluster = unique(.$cluster),
+        stage = stage,
+        p_value = test_result$p.value
+      )
+    })
+    do.call(rbind, results)
+  })
+
+# Adjust p-values for multiple testing using the Benjamini-Hochberg method
+pairwise_results$adjusted_p_value <- p.adjust(pairwise_results$p_value, method = "BH")
+
+# Print the results
+print(pairwise_results)
+```
+```{r}
+write.csv(pairwise_results, "MM_pairwise_results.csv", row.names = FALSE)
+```
+
+```{r}
+install.packages("ggplot2")
+install.packages("dplyr")
+install.packages("ggsignif")
+
+library(ggplot2)
+library(dplyr)
+library(ggsignif)
+```
+
+```{r}
+# Merge significance results with the original data
+Stroma_final_df_100K <- Stroma_final_df_100K %>%
+  left_join(pairwise_results, by = c("cluster", "Disease_Stage" = "stage"))
+
+# Add a column for significance stars where adjusted p-value < 0.05
+Stroma_final_df_100K$significance <- ifelse(Stroma_final_df_100K$p_value < 0.05, "*", NA)
+
+# Ensure Disease_Stage is an ordered factor
+Stroma_final_df_100K$Disease_Stage <- factor(Stroma_final_df_100K$Disease_Stage, 
+                                             levels = c("Prostate Cancer", "MGUS", "SMM", "NDMM", "RRMM"))
+
+bar_heights <- Stroma_final_df_100K %>%
+  group_by(Disease_Stage, cluster) %>%
+  summarize(mean_cell_per_100K = mean(cell_per_100K, na.rm = TRUE),  # Compute bar height
+            significance = ifelse(any(p_value < 0.05), "*", NA), 
+            .groups = "drop")
+
+ggplot(Stroma_final_df_100K, aes(x = Disease_Stage, y = cell_per_100K, fill = factor(cluster))) +
+  geom_bar(stat = "summary", fun = "mean", position = position_dodge(width = 0.8), width = 0.7) +  # Side-by-side bars
+  geom_text(data = bar_heights, 
+            aes(x = Disease_Stage, y = mean_cell_per_100K + 5, label = significance, group = cluster), 
+            position = position_dodge(width = 0.8), 
+            color = "red", 
+            size = 5, 
+            na.rm = TRUE) +  # Position stars slightly above bars
+  labs(y = "Average Cell Number per 100K cells", x = "Disease Stage", fill = "Cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
